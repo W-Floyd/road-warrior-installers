@@ -1,11 +1,89 @@
 #!/bin/bash
 
-# Only tested on a bone stock Brie Host $2/year VPS, running Ubuntu 15.04
+shopt -s extglob
+
+################################################################################
+#
+# Tested on a Brie Host $2/year VPS, running;
+#   Ubuntu 15.04
+#   Ubuntu 14.04
+#   Ubuntu 12.04
+#   Debian 7
+#
 # It *will* *not* *work* on many other providers at this point in time
+################################################################################
 
 ################################################################################
 # Functions
 ################################################################################
+
+################################################################################
+# vercomp <VER_1> <VER_2>
+#
+# Version Compare
+# Compare two version strings:
+# VER_1 = VER_2 : Returns 0
+# VER_1 > VER_2 : Returns 1
+# VER_1 < VER_2 : Returns 2
+#
+# Copied from https://stackoverflow.com/a/4025065
+################################################################################
+
+
+vercomp () {
+    if [[ $1 == $2 ]]
+    then
+        return 0
+    fi
+    local IFS=.
+    local i ver1=($1) ver2=($2)
+    # fill empty fields in ver1 with zeros
+    for ((i=${#ver1[@]}; i<${#ver2[@]}; i++))
+    do
+        ver1[i]=0
+    done
+    for ((i=0; i<${#ver1[@]}; i++))
+    do
+        if [[ -z ${ver2[i]} ]]
+        then
+            # fill empty fields in ver2 with zeros
+            ver2[i]=0
+        fi
+        if ((10#${ver1[i]} > 10#${ver2[i]}))
+        then
+            return 1
+        fi
+        if ((10#${ver1[i]} < 10#${ver2[i]}))
+        then
+            return 2
+        fi
+    done
+    return 0
+}
+
+################################################################################
+# testvercomp <VER_1> =|<|> <VER_2>
+#
+# Test Version Compare
+# Test version numbers, return 0 if true, 1 if false
+# Remember to quote the operator!
+#
+# Copied from https://stackoverflow.com/a/4025065, with some modification
+################################################################################
+
+testvercomp () {
+    vercomp $1 $3
+    case $? in
+        0) op='=';;
+        1) op='>';;
+        2) op='<';;
+    esac
+    if [[ $op != $2 ]]; then
+        return 1
+    else
+        return 0
+    fi
+}
 
 ################################################################################
 # ask "Question?" Y|N
@@ -88,16 +166,34 @@ fi
 }
 
 ################################################################################
+# fail_ask
+################################################################################
+
+fail_ask () {
+
+if ! ask "${1}" N; then
+    exit
+else
+    echo 'Be it on your own head...'
+fi
+
+}
+
+################################################################################
 # debian_install
 ################################################################################
 
 debian_install () {
 
-apt-get update
+apt-get update || fail_ask 'Updating from the servers seems to have failed, do you want to continue?'
 
-if [ "${VER}" -lt 8 ]; then
+if testvercomp "${VER}" '<' 8; then
 
-    apt-get install unzip nginx php5-fpm php5-curl php5-gmp php5-intl php5-json php5-sqlite -y
+    apt-get install unzip nginx php5-fpm php5-curl php5-gmp php5-intl php5-json php5-sqlite -y || fail_ask 'Installing software seems to have failed, do you want to continue?'
+
+else
+
+    apt-get install unzip nginx php php-curl php-gmp php-intl php-mbstring php-sqlite3 php-xml php-zip -y || fail_ask 'Installing software seems to have failed, do you want to continue?'
 
 fi
 
@@ -109,11 +205,15 @@ fi
 
 ubuntu_install () {
 
-apt-get update
+apt-get update || fail_ask 'Updating from the servers seems to have failed, do you want to continue?'
 
-if [ "${VER}" -lt 16.04 ]; then
+if testvercomp "${VER}" '<' 16.04; then
 
-    apt-get install unzip nginx php5-fpm php5-curl php5-gmp php5-intl php5-json php5-sqlite -y
+    apt-get install unzip nginx php5-fpm php5-curl php5-gmp php5-intl php5-json php5-sqlite -y || fail_ask 'Installing software seems to have failed, do you want to continue?'
+
+else
+
+    apt-get install unzip nginx php php-curl php-gmp php-intl php-mbstring php-sqlite3 php-xml php-zip -y || fail_ask 'Installing software seems to have failed, do you want to continue?'
 
 fi
 
@@ -190,6 +290,42 @@ EOF
 }
 
 ################################################################################
+# ubuntu_12_04_nginx
+################################################################################
+
+ubuntu_12_04_nginx () {
+
+cat << EOF > /etc/nginx/sites-available/default
+server {
+    listen 80;
+    listen [::]:80 ipv6only=on;
+
+    root /var/www/html/FreshRSS;
+    index index.php index.html index.htm index.nginx-debian.html;
+
+    server_name _;
+
+    location / {
+        try_files \$uri \$uri/ =404;
+    }
+
+    location ~ \.php$ {
+        try_files \$uri =404;
+        include /etc/nginx/fastcgi_params;
+        fastcgi_pass 127.0.0.1:9000;
+        fastcgi_index index.php;
+        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
+    }
+
+    location ~ /\.ht {
+        deny all;
+    }
+}
+EOF
+
+}
+
+################################################################################
 # generic_php_setup
 ################################################################################
 
@@ -250,10 +386,7 @@ chmod -R g+w /usr/share/FreshRSS/data/
 
 generic_services_systemd () {
 
-systemctl enable php5-fpm
 systemctl restart php5-fpm
-
-systemctl enable nginx
 systemctl restart nginx
 
 }
@@ -264,10 +397,18 @@ systemctl restart nginx
 
 generic_services_sysvinit () {
 
-update-rc.d php5-fpm enable
 service php5-fpm restart
+service nginx restart
 
-update-rc.d nginx enable
+}
+
+################################################################################
+# generic_services_upstart
+################################################################################
+
+generic_services_upstart () {
+
+service php5-fpm restart
 service nginx restart
 
 }
@@ -328,7 +469,7 @@ fi
 ################################################################################
 
 clear
-echo 'Welcome to this quick FreshRSS "road warrior" installer'
+echo 'Welcome to this FreshRSS "road warrior" installer'
 echo
 echo 'This installer *will* destroy any existing config.'
 
@@ -367,17 +508,17 @@ fi
 # Actually do the job
 ################################################################################
 
-echo 'Okay, that was all we need. We are ready to setup your FreshRSS instance now'
+echo 'Okay, that was all we need. We are ready to setup your FreshRSS instance now.'
+echo 'Keep an eye on me though, if i think things are going wrong, I will wait for your input.'
 read -n1 -r -p "Press any key to continue..."
 echo
 
 case $OS in
-    Debian*|Ubuntu)
+    Debian*)
 
         debian_install
 
-
-        if [ "${VER}" -lt '8' ]; then
+        if testvercomp "${VER}" '<' 8; then
             debian_7_nginx
         else
             generic_nginx
@@ -394,7 +535,7 @@ case $OS in
 
         generic_link
 
-        if [ "${VER}" -lt '8' ]; then
+        if testvercomp "${VER}" '<' 8; then
             generic_services_sysvinit
         else
             generic_services_systemd
@@ -405,20 +546,33 @@ case $OS in
     Ubuntu)
         ubuntu_install
 
-        generic_nginx
+# Seeing as no one will be using anything other than a LTS when it's this old, < 14.04 is safe enough'
+        if testvercomp "${VER}" '<' 14.04; then
+            ubuntu_12_04_nginx
+        elif testvercomp "${VER}" '<' 16.04; then
+            debian_7_nginx
+        else
+            generic_nginx
+        fi
 
         generic_php_setup
         generic_download
         generic_unzip
         generic_permissions
+
+        if ! [ -d /var/www/html/ ]; then
+            mkdir -p /var/www/html/
+        fi
+
         generic_link
 
-        if [ "${VER}" -lt '15.04' ]; then
-            generic_services_sysvinit
+        if testvercomp "${VER}" '<' 15.04; then
+            generic_services_upstart
         else
             generic_services_systemd
         fi
         ;;
+
     *)
         echo " OS: ${OS}"
         echo "VER: ${VER}"
