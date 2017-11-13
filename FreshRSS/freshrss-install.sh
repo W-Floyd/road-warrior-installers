@@ -9,6 +9,7 @@ shopt -s extglob
 #   Ubuntu 14.04
 #   Ubuntu 12.04
 #   Debian 7
+#   CentOS 6
 #
 # It *will* *not* *work* on many other providers at this point in time
 ################################################################################
