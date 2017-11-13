@@ -14,6 +14,48 @@ shopt -s extglob
 ################################################################################
 
 ################################################################################
+# Determine OS and VERsion
+#
+# lifted from https://unix.stackexchange.com/a/6348
+################################################################################
+
+if [ -f /etc/os-release ]; then
+    # freedesktop.org and systemd
+    . /etc/os-release
+    OS=$NAME
+    VER=$VERSION_ID
+elif type lsb_release >/dev/null 2>&1; then
+    # linuxbase.org
+    OS=$(lsb_release -si)
+    VER=$(lsb_release -sr)
+elif [ -f /etc/lsb-release ]; then
+    # For some versions of Debian/Ubuntu without lsb_release command
+    . /etc/lsb-release
+    OS=$DISTRIB_ID
+    VER=$DISTRIB_RELEASE
+elif [ -f /etc/debian_version ]; then
+    # Older Debian/Ubuntu/etc.
+    OS=Debian
+    VER=$(cat /etc/debian_version)
+elif [ -f /etc/SuSe-release ]; then
+# TODO - Test and fill out more information
+    # Older SuSE/etc.
+    OS=SuSE
+elif [ -f /etc/redhat-release ]; then
+    if grep -qE '^CentOS*' /etc/redhat-release; then
+        OS=CentOS
+        VER="$(cat /etc/redhat-release | sed 's/.* release \([^ ]*\).*/\1/')"
+    else
+# TODO - Fill out more information
+        OS=Redhat
+    fi
+else
+    # Fall back to uname, e.g. "Linux <version>", also works for BSD, etc.
+    OS=$(uname -s)
+    VER=$(uname -r)
+fi
+
+################################################################################
 # Functions
 ################################################################################
 
@@ -185,7 +227,7 @@ fi
 
 debian_install () {
 
-apt-get update || fail_ask 'Updating from the servers seems to have failed, do you want to continue?'
+apt-get update || fail_ask 'Checking servers seems to have failed, do you want to continue?'
 
 if testvercomp "${VER}" '<' 8; then
 
@@ -205,7 +247,7 @@ fi
 
 ubuntu_install () {
 
-apt-get update || fail_ask 'Updating from the servers seems to have failed, do you want to continue?'
+apt-get update || fail_ask 'Checking servers seems to have failed, do you want to continue?'
 
 if testvercomp "${VER}" '<' 16.04; then
 
@@ -220,17 +262,58 @@ fi
 }
 
 ################################################################################
+# redhat_install
+################################################################################
+
+redhat_install () {
+
+# I would ask if it fails, but it complains no matter what...
+yum check-update -y
+
+yum install epel-release -y || fail_ask 'Installing software seems to have failed, do you want to continue?'
+
+# TODO -  Won't work on CentOS 6, need to test on newer!
+yum install unzip nginx php-fpm php-intl php-mbstring php-sqlite3 php-xml -y || fail_ask 'Installing software seems to have failed, do you want to continue?'
+
+}
+
+################################################################################
+# centos_6_install
+################################################################################
+
+centos_6_install () {
+
+# I would ask if it fails, but it complains no matter what...
+yum check-update -y
+
+yum install epel-release -y || fail_ask 'Installing software seems to have failed, do you want to continue?'
+
+yum install http://rpms.remirepo.net/enterprise/remi-release-6.rpm -y || fail_ask 'Installing a repo for a newer (required) PHP version seems to have failed, do you want to continue?'
+
+yum install yum-utils -y
+
+yum-config-manager --enable remi-php56
+
+yum update -y
+
+yum install unzip nginx php-fpm php-intl php-mbstring php-sqlite3 php-xml -y || fail_ask 'Installing software seems to have failed, do you want to continue?'
+
+}
+
+################################################################################
 # generic_nginx
 ################################################################################
 
 generic_nginx () {
+
+export html_dir='/var/www/html'
 
 cat << EOF > /etc/nginx/sites-available/default
 server {
     listen 80 default_server;
     listen [::]:80 default_server;
 
-    root /var/www/html/FreshRSS;
+    root ${html_dir}/FreshRSS;
     index index.php index.html index.htm index.nginx-debian.html;
 
     server_name _;
@@ -258,13 +341,15 @@ EOF
 
 debian_7_nginx () {
 
+export html_dir='/var/www/html'
+
 cat << EOF > /etc/nginx/sites-available/default
 server {
     listen 80;
     listen [::]:80 ipv6only=on;
 
-    root /var/www/html/FreshRSS;
-    index index.php index.html index.htm index.nginx-debian.html;
+    root ${html_dir}/FreshRSS;
+    index index.php index.html index.htm;
 
     server_name _;
 
@@ -295,13 +380,53 @@ EOF
 
 ubuntu_12_04_nginx () {
 
+export html_dir='/var/www/html'
+
 cat << EOF > /etc/nginx/sites-available/default
 server {
     listen 80;
     listen [::]:80 ipv6only=on;
 
-    root /var/www/html/FreshRSS;
-    index index.php index.html index.htm index.nginx-debian.html;
+    root ${html_dir}/FreshRSS;
+    index index.php index.html index.htm;
+
+    server_name _;
+
+    location / {
+        try_files \$uri \$uri/ =404;
+    }
+
+    location ~ \.php$ {
+        try_files \$uri =404;
+        include /etc/nginx/fastcgi_params;
+        fastcgi_pass 127.0.0.1:9000;
+        fastcgi_index index.php;
+        fastcgi_param SCRIPT_FILENAME \$document_root\$fastcgi_script_name;
+    }
+
+    location ~ /\.ht {
+        deny all;
+    }
+}
+EOF
+
+}
+
+################################################################################
+# centos_6_nginx
+################################################################################
+
+centos_6_nginx () {
+
+export html_dir='/usr/share/nginx/html'
+
+cat << EOF > /etc/nginx/conf.d/default.conf
+server {
+    listen 80;
+    listen [::]:80 ipv6only=on;
+
+    root ${html_dir}/FreshRSS;
+    index index.php index.html index.htm;
 
     server_name _;
 
@@ -336,6 +461,16 @@ sed -e 's/^;cgi.fix_pathinfo=1$/cgi.fix_pathinfo=0/' -i /etc/php5/fpm/php.ini
 }
 
 ################################################################################
+# centos_6_php_setup
+################################################################################
+
+centos_6_php_setup () {
+
+sed -e 's/^;cgi.fix_pathinfo=1$/cgi.fix_pathinfo=0/' -i /etc/php.ini
+
+}
+
+################################################################################
 # generic_download
 ################################################################################
 
@@ -364,7 +499,7 @@ mv /usr/share/FreshRSS-master/ /usr/share/FreshRSS/
 
 generic_link () {
 
-ln -s /usr/share/FreshRSS/p/ /var/www/html/FreshRSS
+ln -s /usr/share/FreshRSS/p/ "${html_dir}/FreshRSS"
 
 }
 
@@ -375,6 +510,18 @@ ln -s /usr/share/FreshRSS/p/ /var/www/html/FreshRSS
 generic_permissions () {
 
 chown -R :www-data /usr/share/FreshRSS/
+chmod -R g+r /usr/share/FreshRSS/
+chmod -R g+w /usr/share/FreshRSS/data/
+
+}
+
+################################################################################
+# centos_6_permissions
+################################################################################
+
+centos_6_permissions () {
+
+chown -R :apache /usr/share/FreshRSS/
 chmod -R g+r /usr/share/FreshRSS/
 chmod -R g+w /usr/share/FreshRSS/data/
 
@@ -414,46 +561,34 @@ service nginx restart
 }
 
 ################################################################################
+# centos_6_services_upstart
+################################################################################
+
+centos_6_services_upstart () {
+
+chkconfig nginx on
+chkconfig php-fpm on
+
+service php-fpm restart
+service nginx restart
+    
+}
+
+################################################################################
+# make_html_dir
+################################################################################
+
+make_html_dir () {
+
+if ! [ -d "${html_dir}" ]; then
+    mkdir -p "${html_dir}"
+fi
+
+}
+
+################################################################################
 # debian_remove_apache
 ################################################################################
-
-
-
-################################################################################
-# Determine OS and VERsion
-#
-# lifted from https://unix.stackexchange.com/a/6348
-################################################################################
-
-if [ -f /etc/os-release ]; then
-    # freedesktop.org and systemd
-    . /etc/os-release
-    OS=$NAME
-    VER=$VERSION_ID
-elif type lsb_release >/dev/null 2>&1; then
-    # linuxbase.org
-    OS=$(lsb_release -si)
-    VER=$(lsb_release -sr)
-elif [ -f /etc/lsb-release ]; then
-    # For some versions of Debian/Ubuntu without lsb_release command
-    . /etc/lsb-release
-    OS=$DISTRIB_ID
-    VER=$DISTRIB_RELEASE
-elif [ -f /etc/debian_version ]; then
-    # Older Debian/Ubuntu/etc.
-    OS=Debian
-    VER=$(cat /etc/debian_version)
-elif [ -f /etc/SuSe-release ]; then
-    # Older SuSE/etc.
-    OS=SuSE
-elif [ -f /etc/redhat-release ]; then
-    # Older Red Hat, CentOS, etc.
-    OS=Redhat
-else
-    # Fall back to uname, e.g. "Linux <version>", also works for BSD, etc.
-    OS=$(uname -s)
-    VER=$(uname -r)
-fi
 
 ################################################################################
 # Check root access
@@ -481,6 +616,12 @@ if ! ask 'Are you sure you want to continue?' N; then
     exit
 fi
 echo
+
+################################################################################
+# Check for incompatible OS versions
+################################################################################
+
+# TODO!
 
 ################################################################################
 # Check for ipv4 and prompt user to upload if on ipv6
@@ -529,9 +670,7 @@ case $OS in
         generic_unzip
         generic_permissions
 
-        if ! [ -d /var/www/html/ ]; then
-            mkdir -p /var/www/html/
-        fi
+        make_html_dir
 
         generic_link
 
@@ -560,9 +699,7 @@ case $OS in
         generic_unzip
         generic_permissions
 
-        if ! [ -d /var/www/html/ ]; then
-            mkdir -p /var/www/html/
-        fi
+        make_html_dir
 
         generic_link
 
@@ -571,6 +708,29 @@ case $OS in
         else
             generic_services_systemd
         fi
+        ;;
+    CentOS)
+        if testvercomp "${VER}" '<' 7; then
+            centos_6_install
+        else
+            redhat_install
+        fi
+
+# TODO - Test on newer and narrow versions!
+        centos_6_nginx
+
+        centos_6_php_setup
+        generic_download
+        generic_unzip
+
+        centos_6_permissions
+
+        make_html_dir
+
+        generic_link
+
+# TODO - Test on newer and narrow versions!
+        centos_6_services_upstart
         ;;
 
     *)
