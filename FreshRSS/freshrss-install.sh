@@ -5,11 +5,11 @@ shopt -s extglob
 ################################################################################
 #
 # Tested on a Brie Host $2/year VPS, running;
-#   Ubuntu 15.04
-#   Ubuntu 14.04
-#   Ubuntu 12.04
-#   Debian 7
-#   CentOS 6
+#
+# There is a fair bit of churn for the moment, but partial to full support for:
+# Ubuntu
+# Debian
+# CentOS
 #
 # It *will* *not* *work* on many other providers at this point in time
 ################################################################################
@@ -173,6 +173,44 @@ ask () {
 }
 
 ################################################################################
+# user_input <var> "Question?" "default"
+#
+# Where "default" is an optional default, and var is the variable to store in
+# Modified from https://gist.github.com/davejamesmiller/1965569
+################################################################################
+
+user_input () {
+    local default reply
+
+    while true; do
+        if ! [ -z "${3}" ]; then
+            default="${3}"
+        else
+            default=
+        fi
+
+        # Ask the question (not using "read -p" as it uses stderr not stdout)
+        echo -n "${2} [${default}] "
+
+        # Read the answer (use /dev/tty in case stdin is redirected from somewhere else)
+        read reply </dev/tty
+
+        # Default?
+        if [ -z "$reply" ]; then
+            if [ -z "${default}" ]; then
+                echo 'An input is required'
+                continue
+            fi
+                reply="${default}"
+
+        fi
+
+        export "${1}"="${reply}"
+        return 0
+    done
+}
+
+################################################################################
 # check_ipv4
 #
 # Checks for IPv4, will ask if need be, returns 1 if unavailable, 0 if available
@@ -198,7 +236,7 @@ elif which ping &> /dev/null; then
 
 else
 
-    if ask "I couldn't check for it, but do you have IPv4 access?" Y; then
+    if ask "We couldn't check for it, but do you have IPv4 access?" Y; then
         return 0
     else
         return 1
@@ -248,17 +286,21 @@ fi
 
 ubuntu_install () {
 
+local package_list
+
 apt-get update || fail_ask 'Checking servers seems to have failed, do you want to continue?'
 
 if testvercomp "${VER}" '<' 16.04; then
 
-    apt-get install unzip nginx php5-fpm php5-curl php5-gmp php5-intl php5-json php5-sqlite -y || fail_ask 'Installing software seems to have failed, do you want to continue?'
+    package_list='unzip nginx php5-fpm php5-curl php5-gmp php5-intl php5-json php5-sqlite php5-cli'
 
 else
 
-    apt-get install unzip nginx php php-curl php-gmp php-intl php-mbstring php-sqlite3 php-xml php-zip -y || fail_ask 'Installing software seems to have failed, do you want to continue?'
+    package_list='nginx php php-curl php-gmp php-intl php-mbstring php-sqlite3 php-xml php-zip php-cli'
 
 fi
+
+apt-get install ${package_list} -y || fail_ask 'Installing software seems to have failed, do you want to continue?'
 
 }
 
@@ -510,21 +552,19 @@ ln -s /usr/share/FreshRSS/p/ "${html_dir}/FreshRSS"
 
 generic_permissions () {
 
-chown -R :www-data /usr/share/FreshRSS/
-chmod -R g+r /usr/share/FreshRSS/
-chmod -R g+w /usr/share/FreshRSS/data/
+case $OS in
+    CentOS)
+        chown -R :apache /usr/share/FreshRSS/
+        chmod -R g+r /usr/share/FreshRSS/
+        chmod -R g+w /usr/share/FreshRSS/data/
+        ;;
 
-}
-
-################################################################################
-# centos_6_permissions
-################################################################################
-
-centos_6_permissions () {
-
-chown -R :apache /usr/share/FreshRSS/
-chmod -R g+r /usr/share/FreshRSS/
-chmod -R g+w /usr/share/FreshRSS/data/
+    *)
+        chown -R :www-data /usr/share/FreshRSS/
+        chmod -R g+r /usr/share/FreshRSS/
+        chmod -R g+w /usr/share/FreshRSS/data/
+        ;;
+esac
 
 }
 
@@ -588,8 +628,39 @@ fi
 }
 
 ################################################################################
-# debian_remove_apache
+# generic_admin_setup
 ################################################################################
+
+generic_admin_setup () {
+
+generic_default_user "${admin_name}"
+generic_add_user "${admin_name}" "${admin_password}"
+
+}
+
+################################################################################
+# generic_default_user <name>
+################################################################################
+
+generic_default_user () {
+
+/usr/share/FreshRSS/cli/do-install.php --default_user "${1}"
+
+}
+
+################################################################################
+# generic_add_user <name> <password>
+################################################################################
+
+generic_add_user () {
+
+/usr/share/FreshRSS/cli/create-user.php --user "${1}" --password "${2}"
+
+/usr/share/FreshRSS/cli/actualize-user.php --user "${1}"
+
+generic_permissions
+
+}
 
 ################################################################################
 # Check root access
@@ -622,7 +693,17 @@ echo
 # Check for incompatible OS versions
 ################################################################################
 
-# TODO!
+# TODO - Fill in as they are found.
+
+################################################################################
+# Admin user setup
+################################################################################
+
+user_input admin_name 'Admin username' 'admin'
+user_input admin_password 'Admin password'
+
+echo
+#./cli/do-install.php --default_user admin --environment production --base_url https://rss.example.net/ --language en --title FreshRSS --allow_anonymous --api_enabled )
 
 ################################################################################
 # Check for ipv4 and prompt user to upload if on ipv6
@@ -651,7 +732,7 @@ fi
 ################################################################################
 
 echo 'Okay, that was all we need. We are ready to setup your FreshRSS instance now.'
-echo 'Keep an eye on me though, if i think things are going wrong, I will wait for your input.'
+echo 'Keep an eye on me though, if we think things are going wrong, we will wait for your input.'
 read -n1 -r -p "Press any key to continue..."
 echo
 
@@ -669,6 +750,7 @@ case $OS in
         generic_php_setup
         generic_download
         generic_unzip
+        generic_admin_setup
         generic_permissions
 
         make_html_dir
@@ -698,6 +780,7 @@ case $OS in
         generic_php_setup
         generic_download
         generic_unzip
+        generic_admin_setup
         generic_permissions
 
         make_html_dir
@@ -723,8 +806,8 @@ case $OS in
         centos_6_php_setup
         generic_download
         generic_unzip
-
-        centos_6_permissions
+        generic_admin_setup
+        generic_permissions
 
         make_html_dir
 
@@ -747,6 +830,6 @@ else
     echo -n "Please visit http://${address}"
 fi
 
-echo ' to complete the setup process.'
+echo ' to login and configure things further.'
 
 exit
